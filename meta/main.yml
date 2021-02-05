@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  author: "MITRE Corp"
+  description: 'This Ansible role provides secure postgresql 12.x configurations.'
+  company: Hardening Framework Team
+  license: Apache License 2.0
+  min_ansible_version: '2.5'
+  platforms:
+    - name: EL
+      versions:
+        - 6
+        - 7
+  galaxy_tags:
+    - system
+    - security
+    - hardening
+    - postgresql
+dependencies: []

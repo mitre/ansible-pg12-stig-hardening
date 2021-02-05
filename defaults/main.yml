@@ -1,0 +1,22 @@
+pginstalldir: /usr/pgsql-12
+psql: /usr/pgsql-12/bin/psql
+pghomedir: /opt/pgsql
+pgdatadir: "{{ pghomedir }}/data"
+
+certdir: "{{ pgdatadir }}/certs"
+servercertfile: "{{ certdir }}/server-cert.pem"
+serverkeyfile: "{{ certdir }}/server-key.pem"
+clientcertfile: "{{ certdir }}/client-cert.pem"
+clientkeyfile: "{{ certdir }}/client-key.pem"
+crlfile: "{{ pgdatadir }}/root.crl"
+cafile: "{{ certdir }}/ca-cert.pem"
+cakeyfile: "{{ certdir }}/ca-key.pem"
+sslminversion: TLSv1
+sslciphers: TLSv1.2:TLSv1:!AES128:!MD5:!SHA1:!aNULL:!eNULL
+passwordencryption: scram-sha-256
+
+pglogdirname: pg_log
+
+pgconffile: "{{ pgdatadir }}/postgresql.conf"
+
+pgport: 5432

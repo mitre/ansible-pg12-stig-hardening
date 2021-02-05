@@ -1,0 +1,660 @@
+---
+# Start postgres
+- name: Start postgres
+  ansible.builtin.service:
+    name: postgresql-12
+    state: started
+  become: yes
+  tags:
+    - setup
+
+# Inspec test_db
+- name: Check if test_db exists
+  shell: psql -c "\l" | grep test_db | cat
+  register: test_db_existance
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  become_user: postgres
+  tags:
+    - setup
+
+- name: Create test_db
+  command: psql -c "CREATE DATABASE test_db"
+  become_user: postgres
+  become: yes
+  when: test_db_existance.stdout.find('test_db') == -1
+  tags:
+    - setup
+
+- name: Grant all to postgres
+  command: psql -c "GRANT ALL ON DATABASE test_db TO postgres;"
+  become_user: postgres
+  become: yes
+  tags:
+    - setup
+
+- name: Grant read all settings to postgres
+  command: psql -c "GRANT pg_read_all_settings to postgres;"
+  become_user: postgres
+  become: yes
+  tags:
+    - setup
+
+- name: Edit current user home directory, fixes inspec checks
+  shell: chmod 755 .
+  become: yes
+  tags:
+    - setup
+
+# V-233513, V-233550, V-233594
+- name: remove old versions of postgres
+  yum:
+    name: postgresql-libs.x86_64
+    state: absent
+  become: yes
+  tags:
+    - V-233513
+    - V-233550
+    - V-233594
+
+# V-233522
+- name: Grant read all settings to postgres
+  command: psql -c "ALTER ROLE postgres CONNECTION LIMIT 10;"
+  become_user: postgres
+  become: yes
+  tags:
+    - V-233522
+
+# V-233517, V-233618 permission install directory and data config
+- name: Update install directory permissions and ownership
+  file:
+    path: "{{ pginstalldir }}"
+    state: directory
+    mode: 0755
+    owner: root
+    group: root
+    recurse: yes
+  become: yes
+  tags:
+    - V-233517
+    - V-233618
+
+# V-233518
+- name: Update conf permissions and ownership
+  file:
+    path: "{{ pgconffile }}"
+    state: file
+    mode: 0600
+    owner: postgres
+    group: postgres
+  become: yes
+  tags:
+    - V-233518
+
+- name: Create stig conf file
+  file:
+    path: "{{ pgdatadir }}/stig-postgresql.conf"
+    state: touch
+    mode: 0600
+    owner: postgres
+    group: postgres
+  become: yes
+
+# V-233511
+- name: Check if port is already in config file
+  shell: grep -c "port" {{ pgconffile }} | cat
+  register: port_existance
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233511
+
+- name: Set port to {{ pgport }}
+  when: port_existance.stdout.find("port") != -1
+  lineinfile:
+    path: "{{ pgconffile }}"
+    regexp: '^port( =|=)'
+    line: port = {{ pgport }}
+  become: yes
+  notify: 
+    - restart postgres
+  tags:
+    - V-233511
+
+- name: Add port to config file
+  when: port_existance.stdout.find("port") == -1
+  become: yes
+  tags:
+    - V-233511
+  blockinfile:
+    marker: "# V-233511 ensure approved port"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      port = 5432
+      listen_addresses = '127.0.0.1'
+  notify: 
+    - restart postgres
+
+# V-233538, V-233577, V-233579, V-233584, V-233602, V-233603, V-233611, V-233619
+- name: Install openssl
+  yum:
+    name: openssl
+    state: present
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: generate self-signed ssl certificate and key
+  shell: |
+    openssl genrsa 4096 > {{ cakeyfile }}
+    openssl req -new -x509 -nodes -days 3600 -key {{ cakeyfile }} -out {{ cafile }} -subj "/C=US/ST=DC/L=GOV/O=DoD/OU=root/CN=POSTGRESQL/emailAddress=ansible@postgresql.config"
+    openssl req -newkey rsa:4096 -days 3600 -nodes -keyout {{ serverkeyfile }} -out {{ certdir }}/server-req.pem -subj "/C=US/ST=DC/L=GOV/O=DoD/OU=root/CN=POSTGRESQL/emailAddress=ansible@postgresql.config"
+    openssl rsa -in {{ serverkeyfile }} -out {{ serverkeyfile }}
+    openssl x509 -req -in {{ certdir }}/server-req.pem -days 3600 -CA {{ cafile }} -CAkey {{ cakeyfile }} -set_serial 01 -out {{ servercertfile }}
+    openssl req -newkey rsa:4096 -days 3600 -nodes -keyout {{ clientkeyfile }} -out {{ certdir }}/client-req.pem -subj "/C=US/ST=DC/L=GOV/O=DoD/OU=root/CN=POSTGRESQL/emailAddress=ansible@postgresql.config"
+    openssl rsa -in {{ clientkeyfile }} -out {{ clientkeyfile }}
+    openssl x509 -req -in {{ certdir }}/client-req.pem -days 3600 -CA {{ cafile }} -CAkey {{ cakeyfile }} -set_serial 01 -out {{ clientcertfile }}
+  changed_when: 1
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: update cert permissions
+  shell: chmod 0600 {{ certdir }}/* && chown postgres:postgres {{ certdir }}/*
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: edit cert directory permissions
+  file:
+    path: "{{ certdir }}"
+    state: directory
+    mode: 0700
+    owner: postgres
+    group: postgres
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: create index.txt
+  file:
+    path: /etc/pki/CA/index.txt
+    state: touch
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: init crlnumber
+  shell: echo 1000 > /etc/pki/CA/crlnumber
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: create revocation list file
+  shell: openssl ca -gencrl -out {{ crlfile }} -keyfile {{ serverkeyfile }} -cert {{ servercertfile }}
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: update crl file permissions
+  file:
+    path: "{{ pgdatadir }}/root.crl"
+    owner: postgres
+    group: postgres
+    mode: 0700
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: Check if ssl rules are already in config file
+  shell: grep "V-233538, V-233577, V-233579, V-233584, V-233602, V-233603, V-233611, V-233619" {{ pgconffile }} | cat
+  register: ssl_existance
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+- name: Add ssl conf lines
+  become: yes
+  when: ssl_existance.stdout.find("V-233538, V-233577, V-233579, V-233584, V-233602, V-233603, V-233611, V-233619") == -1
+  blockinfile:
+    marker: "# V-233538, V-233577, V-233579, V-233584, V-233602, V-233603, V-233611, V-233619"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      ssl = on
+      ssl_min_protocol_version = '{{ sslminversion }}'
+      ssl_prefer_server_ciphers = on
+      ssl_ciphers = '{{ sslciphers }}'
+      ssl_cert_file = '{{ servercertfile }}'
+      ssl_key_file = '{{ serverkeyfile }}'
+      ssl_crl_file = '{{ crlfile }}'
+      ssl_ca_file = '{{ cafile }}'
+      password_encryption = '{{ passwordencryption }}'
+  notify: 
+    - restart postgres
+  tags:
+    - V-233538
+    - V-233577
+    - V-233579
+    - V-233584
+    - V-233602
+    - V-233603
+    - V-233611
+    - V-233619
+
+# V-233522
+- name: Check if max connections is already in config file
+  shell: grep "V-233522" {{ pgconffile }} | cat
+  register: max_connections_existance
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233522
+
+- name: Set max connections to 100
+  when: max_connections_existance.stdout.find("V-233522") != -1
+  lineinfile:
+    path: "{{ pgconffile }}"
+    regexp: '^max_connections( =|=)'
+    line: max_connections = 100
+  become: yes
+  notify: 
+    - restart postgres
+  tags:
+    - V-233522
+
+- name: Add max connections to config file
+  when: max_connections_existance.stdout.find("V-233522") == -1
+  become: yes
+  blockinfile:
+    marker: "# V-233522 - set max connections"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      max_connections = 100
+  notify: 
+    - restart postgres
+  tags:
+    - V-233522
+
+# V-233512, V-233551, V-233621, V-233622
+- name: Check if pgaudit rules are in place
+  shell: grep "V-233512, V-233551, V-233621, V-233622" {{ pgconffile }} | cat
+  register: pgaudit_rules
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233512
+    - V-233551
+    - V-233621
+    - V-233622
+
+- name: Add pgaudit rules to conf file
+  when: pgaudit_rules.stdout.find("V-233512, V-233551, V-233621, V-233622") == -1
+  become: yes
+  blockinfile:
+    marker: "# pgaudit config - V-233512, V-233551, V-233621, V-233622"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      shared_preload_libraries = 'pgaudit'
+      pgaudit.log_catalog='on'
+      pgaudit.log_level='log'
+      pgaudit.log_client='on'
+      pgaudit.log_relation='on'
+      pgaudit.log_parameter='on'
+      pgaudit.log_statement_once='off'
+      pgaudit.log='ddl, read, role, write, function, misc, misc_set'
+  notify:
+    - restart postgres
+  tags:
+    - V-233512
+    - V-233551
+    - V-233621
+    - V-233622
+
+# V-233512, V-233514, V-233516, V-233531, V-233533, V-233545, V-233549, V-233553, V-233554, V-233558, V-233569, V-233581, V-233582, V-233589, V-233591, V-233598, V-233604, V-233608, V-233610, V-233618, V-233621, V-233622, V-233578
+- name: Check if log rules are in place
+  shell: grep "V-233512, V-233514, V-233516, V-233531, V-233533, V-233545, V-233549, V-233553, V-233554, V-233558, V-233569, V-233581, V-233582, V-233589, V-233591, V-233598, V-233604, V-233608, V-233610, V-233618, V-233621, V-233622, V-233578" {{ pgconffile }} | cat
+  register: log_rules
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233512
+    - V-233514
+    - V-233516
+    - V-233531
+    - V-233533
+    - V-233545
+    - V-233549
+    - V-233553
+    - V-233554
+    - V-233558
+    - V-233569
+    - V-233581
+    - V-233582
+    - V-233589
+    - V-233591
+    - V-233598
+    - V-233604
+    - V-233608
+    - V-233610
+    - V-233618
+    - V-233621
+    - V-233622
+    - V-233578
+
+- name: set timezone for logging
+  shell: date +"%Z"
+  register: systimezone
+
+- name: Add log rules to conf file
+  when: log_rules.stdout.find("V-233512, V-233514, V-233516, V-233531, V-233533, V-233545, V-233549, V-233553, V-233554, V-233558, V-233569, V-233581, V-233582, V-233589, V-233591, V-233598, V-233604, V-233608, V-233610, V-233618, V-233621, V-233622, V-233578") == -1
+  become: yes
+  blockinfile:
+    marker: "# logging config - V-233512, V-233514, V-233516, V-233531, V-233533, V-233545, V-233549, V-233553, V-233554, V-233558, V-233569, V-233581, V-233582, V-233589, V-233591, V-233598, V-233604, V-233608, V-233610, V-233618, V-233621, V-233622, V-233578"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      log_directory = {{ pglogdirname }}
+      log_connections = on
+      log_disconnections = on
+      log_line_prefix = '< %m %u %d %s %c %p %r %a %i %e: >'
+      log_timezone = '{{ systimezone.stdout }}'
+      log_error_verbosity = default
+      log_duration = on
+      log_hostname = on
+      client_min_messages = error
+      log_file_mode = 0600
+      log_min_messages = INFO
+      log_min_error_statement = NOTICE
+      #log_min_duration_statement = 60000ms
+      # local daily log rotation
+      logging_collector = on
+      log_filename = 'server_log.%a'
+      log_truncate_on_rotation = on
+      log_rotation_age = 1440
+      # syslog
+      syslog_facility = 'LOCAL0'
+      syslog_ident = 'postgres'
+      event_source = 'PostgreSQL'
+      log_destination = 'csvlog,syslog'
+  tags:
+    - V-233512
+    - V-233514
+    - V-233516
+    - V-233531
+    - V-233533
+    - V-233545
+    - V-233549
+    - V-233553
+    - V-233554
+    - V-233558
+    - V-233569
+    - V-233581
+    - V-233582
+    - V-233589
+    - V-233591
+    - V-233598
+    - V-233604
+    - V-233608
+    - V-233610
+    - V-233618
+    - V-233621
+    - V-233622
+    - V-233578
+  notify:
+    - restart postgres
+
+# V-233577
+- name: Update hba config file
+  become: yes
+  copy:
+    dest: "{{ pgdatadir }}/pg_hba.conf"
+    content: |    
+      # TYPE  DATABASE        USER            ADDRESS                 METHOD
+      local   all             postgres                                trust
+      host    replication     replication     127.0.0.1/32            trust
+      host    all             postgres        127.0.0.1/32            trust
+      hostssl all             all             0.0.0.0/0               cert clientcert=verify-full
+  notify:
+    - restart postgres
+  tags:
+    - V-233577
+
+# V-233519
+- name: Check if password is in hba.conf
+  shell: grep "password" {{ pgdatadir }}/pg_hba.conf | cat
+  register: max_connections_existance
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233519
+
+- name: Set max connections to 100
+  when: max_connections_existance.stdout.find("password") != -1
+  lineinfile:
+    path: "{{ pgdatadir }}/pg_hba.conf"
+    regexp: 'password'
+    line: 
+  become: yes
+  notify: 
+    - restart postgres
+  tags:
+    - V-233519
+
+# V-233609, V-233518
+- name: update permissions in postgres dirs
+  become: yes
+  file:
+    path: "{{ pgdatadir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    recurse: yes
+  tags:
+    - V-233609
+    - V-233518
+    - V-233517
+
+- name: update permissions for hba.conf
+  become: yes
+  file:
+    path: "{{ pgdatadir }}/pg_hba.conf"
+    state: file
+    owner: postgres
+    group: postgres
+    mode: 0600
+  tags:
+    - V-233609
+    - V-233518
+
+- name: update permissions for ident.conf
+  become: yes
+  file:
+    path: "{{ pgdatadir }}/pg_ident.conf"
+    state: file
+    owner: postgres
+    group: postgres
+    mode: 0600
+  tags:
+    - V-233609
+    - V-233518
+
+- name: update permissions for stig-postgresql.conf
+  become: yes
+  file:
+    path: "{{ pgdatadir }}/stig-postgresql.conf"
+    state: file
+    owner: postgres
+    group: postgres
+    mode: 0600
+  tags:
+    - V-233609
+  
+- name: update permissions for usr postgres dir
+  become: yes
+  file:
+    path: "{{ pginstalldir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+    recurse: yes
+  tags:
+    - V-233609
+    - V-233517
+
+# V-233606
+- name: Check if pgaudit rules are in place
+  shell: grep "V-233606" {{ pgconffile }} | cat
+  register: statementtimeout
+  check_mode: no
+  ignore_errors: yes
+  changed_when: no
+  become: yes
+  tags:
+    - V-233606
+
+- name: Add pgaudit rules to conf file
+  when: statementtimeout.stdout.find("V-233606") == -1
+  become: yes
+  blockinfile:
+    marker: "# V-233606"
+    path: "{{ pgconffile }}"
+    insertafter: EOF
+    block: |
+      statement_timeout = 10000
+      unix_socket_directories = '\/opt\/pgsql\/data'
+  notify:
+    - restart postgres
+  tags:
+    - V-233606
+
+- name: verify backup of postgresql.conf
+  stat: 
+    path: "{{ pgdatadir }}/postgresql.conf.defaults.back"
+  register: postgresconf_backup
+  become: yes
+
+- name: backup the postgresql.conf
+  shell: cp {{ pgconffile }} {{ pgdatadir }}/postgresql.conf.defaults.back
+  when: not postgresconf_backup.stat.exists
+  become: yes
+
+- name: change backup permissions
+  file:
+    path: "{{ pgdatadir }}/postgresql.conf.defaults.back"
+    state: file
+    mode: 0400
+    owner: postgres
+    group: postgres
+  become: yes
+
+- name: set log directory permissions
+  file:
+    path: "{{ pgdatadir }}/log"
+    state: directory
+    mode: 0700
+    owner: postgres
+    group: postgres
+    recurse: yes
+  become: yes
+
+- name: set log directory permissions 2
+  file:
+    path: "{{ pgdatadir }}/{{ pglogdirname }}"
+    state: directory
+    mode: 0700
+    owner: postgres
+    group: postgres
+    recurse: yes
+  become: yes
+
+- name: remove local replication trust
+  lineinfile:
+    path: "{{ pgdatadir }}/pg_hba.conf"
+    regexp: 'local   all             postgres                                trust'
+    line: local   all             postgres                                reject
+  become: yes
+  tags:
+    - V-233520
+    - V-233612
